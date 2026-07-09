@@ -3,7 +3,14 @@ import numpy as np
 from typing import Tuple, List, Dict, Any
 from pathlib import Path
 
-REQUIRED_COLUMNS = [
+REQUIRED_COLUMNS_CHURN = [
+    "Контрагент", "Код ТО", "Срок жизни от регистрации", "Количество ОС",
+    "Сумма счета ИО", "%Скидки", "Вид деятельности", "Годовая выручка",
+    "Численность сотрудников", "Конкурент", "Была угроза отключения",
+    "Время всех сессий в мин"
+]
+
+REQUIRED_COLUMNS_WINBACK = [
     "Контрагент", "Код ТО", "Срок жизни от регистрации", "Количество ОС",
     "Сумма счета ИО", "%Скидки", "Вид деятельности", "Годовая выручка",
     "Численность сотрудников", "Конкурент", "Была угроза отключения",
@@ -33,18 +40,26 @@ RISK_LEVELS = [
 
 class ExcelService:
     @staticmethod
-    def validate_file(file_path: str) -> Tuple[bool, List[str], pd.DataFrame]:
+    def validate_file(file_path: str, mode: str):
         errors = []
-        df = None
+
         try:
-            df = pd.read_excel(file_path, header=0)
+            if mode == "churn":
+                df = pd.read_excel(file_path, sheet_name="КИС_дляСкорингаДИС_Сопр", header=0)
+                required_columns = REQUIRED_COLUMNS_CHURN
+            else:
+                df = pd.read_excel(file_path, sheet_name="КИС_дляСкорингаДИС_Откл", header=0)
+                required_columns = REQUIRED_COLUMNS_WINBACK
+
         except Exception as e:
             errors.append(f"Ошибка чтения файла: {str(e)}")
             return False, errors, None
 
-        missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+        missing = [col for col in required_columns if col not in df.columns]
+
         if missing:
             errors.append(f"Отсутствуют столбцы: {', '.join(missing)}")
+
         if df.empty:
             errors.append("Файл не содержит данных")
 
@@ -80,9 +95,15 @@ class ExcelService:
             "employees": ExcelService.normalize_series(result["Численность сотрудников"]),
             "sessions": ExcelService.normalize_series(result["Время всех сессий в мин"]),
             "competitor": result["Конкурент"].isna().astype(float),
-            "threat": result["Была угроза отключения"].isna().astype(float),
+            "threat": result["Была угроза отключения"]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .isin(["да", "есть", "true", "1"])
+                        .astype(float),
         }
-
+        if "Причина отключения" not in result.columns:
+            result["Причина отключения"] = None
         reason_w = result["Причина отключения"].apply(ExcelService.get_reason_weight)
 
         # Взвешенная сумма
@@ -113,6 +134,7 @@ class ExcelService:
         cols = ["Срок жизни от регистрации", "Количество ОС", "Сумма счета ИО",
                 "%Скидки", "Годовая выручка", "Численность сотрудников",
                 "Время всех сессий в мин", "Причина отключения"]
+        
         result["feature_completeness"] = result[cols].notna().sum(axis=1) / len(cols)
 
         def get_top(row):

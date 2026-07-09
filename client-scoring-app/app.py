@@ -7,7 +7,7 @@ from datetime import datetime
 
 # КОНФИГУРАЦИЯ API
 # Заменить на реальный адрес бэкенда после запуска!!!
-#API_BASE_URL = "http://localhost:8000" 
+API_BASE_URL = "http://localhost:8000" 
 st.set_page_config(page_title="Churn & Win-back System", layout="wide")
 st.title("Система скоринга клиентов ДИС")
 
@@ -88,9 +88,9 @@ if st.session_state['result_data']:
         with col1:
             st.metric(label="Всего отключившихся", value=data['summary']['total_clients'])
         with col2:
-            st.metric(label="Высокая возвращаемость", value=data['summary']['high_return'])
+            st.metric(label="Высокая возвращаемость", value=data['summary']['high_risk'])
         with col3:
-            st.metric(label="Средняя вероятность возврата", value=f"{data['summary']['avg_return']:.2%}")
+            st.metric(label="Средняя вероятность возврата", value=f"{data['summary']['avg_risk']:.2%}")
             
         risk_label = "Вероятность возврата"
         prob_col = "return_probability"
@@ -121,12 +121,16 @@ if st.session_state['result_data']:
             mask &= df_full['has_competitor'] == True
             
     with col_f3:
-        filter_threat = st.checkbox("Была угроза")
+        filter_threat = st.checkbox("Была угроза отключения")
         if filter_threat:
             mask &= df_full['has_threat'] == True
 
     df_filtered = df_full[mask].copy()
+    if "final_probability" in df_filtered.columns:
+        df_filtered["final_probability"] = (df_filtered["final_probability"] * 100).round(2).astype(str) + "%"
 
+    if "feature_completeness" in df_filtered.columns:
+        df_filtered["feature_completeness"] = (df_filtered["feature_completeness"] * 100).round(2).astype(str) + "%"
     # ТАБЛИЦА 
     st.subheader("Результаты скоринга")
     
@@ -135,8 +139,24 @@ if st.session_state['result_data']:
         'feature_completeness', top_factors_col, 'competitor', 'has_threat'
     ]
     safe_cols = [c for c in display_cols if c in df_filtered.columns]
-    
-    st.dataframe(df_filtered[safe_cols], use_container_width=True, hide_index=True)
+    rename_columns = {
+    "company_name": "Контрагент",
+    "code_to": "Код ТО",
+    "final_probability": "Вероятность ухода",
+    "return_probability": "Вероятность возврата",
+    "risk_level": "Уровень риска",
+    "return_level": "Уровень возвращаемости",
+    "feature_completeness": "Полнота данных",
+    "top_factors": "Основные факторы",
+    "return_reasons": "Причины возврата",
+    "competitor": "Конкурент",
+    "has_threat": "Была угроза отключения"
+    }
+
+    df_show = df_filtered[safe_cols].rename(columns=rename_columns)
+
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+   
 
     # ЭКСПОРТ В EXCEL
     if not df_filtered.empty:

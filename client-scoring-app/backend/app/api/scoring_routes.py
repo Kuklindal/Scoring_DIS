@@ -1,12 +1,11 @@
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException,Query
 from fastapi.responses import JSONResponse
-
+from scoring.pipeline import calculate_scores
 from app.services.excel_service import ExcelService
 from app.services.response_service import ResponseService
 from app.schemas.scoring_schema import FileUploadResponse
-
 router = APIRouter()
 
 # Временная папка для загруженных файлов
@@ -14,8 +13,8 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@router.post("/score", response_model=FileUploadResponse)
-async def upload_file(file: UploadFile = File(...)):
+@router.post("/score")
+async def upload_file(file: UploadFile = File(...),mode: str = Query(...)):
     try:
         if not file.filename.endswith(('.xlsx', '.xls')):
             raise HTTPException(400, "Неверный формат. Ожидается .xlsx или .xls")
@@ -28,24 +27,25 @@ async def upload_file(file: UploadFile = File(...)):
             f.write(content)
 
         # Валидация и расчёт
-        is_valid, errors, df = ExcelService.validate_file(str(temp_path))
+        is_valid, errors, df = ExcelService.validate_file(str(temp_path),mode)
 
         if not is_valid:
             temp_path.unlink()
             raise HTTPException(400, f"Ошибка валидации: {', '.join(errors)}")
 
-        result_df = ExcelService.calculate_scores(df)
+        result_df = calculate_scores(df)
+        result_df = result_df.rename(columns={
+            "Final_Probability": "final_probability",
+            "Risk_Level": "risk_level",
+            "Feature_Completeness": "feature_completeness",
+            "Top_Factors": "top_factors"
+        })
         response_data = ResponseService.prepare_response(result_df)
         ResponseService.save_result(response_data, file_id)
 
         temp_path.unlink()
 
-        return FileUploadResponse(
-            file_id=file_id,
-            message="Файл успешно обработан",
-            status="success"
-        )
-
+        return response_data
     except HTTPException:
         raise
     except Exception as e:
