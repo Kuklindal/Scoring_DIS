@@ -82,6 +82,22 @@ class ExcelService:
         return 0 if pd.isna(reason) else REASON_MULTIPLIERS.get(reason, 1.0)
 
     @staticmethod
+    def validate_manual_file(file_path: str):
+        errors = []
+        df = None
+
+        try:
+            df = pd.read_excel(file_path, header=0)
+        except Exception as e:
+            errors.append(f"Ошибка чтения файла: {str(e)}")
+            return False, errors, None
+
+        if df.empty:
+            errors.append("Файл не содержит данных")
+
+        return len(errors) == 0, errors, df
+
+    @staticmethod
     def calculate_scores(df: pd.DataFrame) -> pd.DataFrame:
         result = df.copy()
 

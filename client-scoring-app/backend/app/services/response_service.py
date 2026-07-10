@@ -45,7 +45,7 @@ class ResponseService:
                     row.get("Численность сотрудников", 0)) else None,
                 "competitor": str(row.get("Конкурент", "")) if pd.notna(row.get("Конкурент", "")) else None,
                 "has_competitor": pd.notna(row.get("Конкурент", None)),
-                "has_threat": bool(row.get("Has_Threat", 0) == 1),
+                "has_threat": bool(row.get("has_threat", 0) == 1) or bool(row.get("Has_Threat", 0) == 1),
                 "total_session_minutes": float(row.get("Время всех сессий в мин", 0)) if pd.notna(
                     row.get("Время всех сессий в мин", 0)) else None,
                 "final_probability": round(float(row.get("final_probability", 0)), 4),
