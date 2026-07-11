@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 from pathlib import Path
+
+from app.services.data_cleaning_service import DataCleaningService
 
 REQUIRED_COLUMNS_CHURN = [
     "Контрагент", "Код ТО", "Срок жизни от регистрации", "Количество ОС",
@@ -36,6 +38,10 @@ RISK_LEVELS = [
     (0.0, 0.3, "Низкий"), (0.3, 0.6, "Средний"),
     (0.6, 0.8, "Высокий"), (0.8, 1.0, "Критический")
 ]
+
+# Ниже этой доли распознанных значений колонка считается несовместимой
+# с заявленным типом признака при ручном скоринге
+MIN_PARSEABLE_RATIO = 0.5
 
 
 class ExcelService:
@@ -82,7 +88,14 @@ class ExcelService:
         return 0 if pd.isna(reason) else REASON_MULTIPLIERS.get(reason, 1.0)
 
     @staticmethod
-    def validate_manual_file(file_path: str):
+    def validate_manual_file(file_path: str, features: Optional[List[Any]] = None):
+        """
+        features: опционально - список FeatureConfig (name, type, ...).
+        Если передан, дополнительно проверяем:
+          - что все нужные колонки присутствуют;
+          - что колонка реально приводится к заявленному типу
+            (percent/numeric/binary), а не просто "непустая".
+        """
         errors = []
         df = None
 
@@ -94,6 +107,24 @@ class ExcelService:
 
         if df.empty:
             errors.append("Файл не содержит данных")
+            return False, errors, df
+
+        if features:
+            missing = [f.name for f in features if f.name not in df.columns]
+            if missing:
+                errors.append(f"Отсутствуют столбцы: {', '.join(missing)}")
+
+            for f in features:
+                if f.name not in df.columns:
+                    continue
+                raw = df[f.name]
+                cleaned = DataCleaningService.clean_column(raw, f.type)
+                ratio = DataCleaningService.parseable_ratio(raw, cleaned)
+                if ratio < MIN_PARSEABLE_RATIO:
+                    errors.append(
+                        f"Колонка '{f.name}': только {ratio:.0%} значений удалось "
+                        f"распознать как тип '{f.type}' - проверьте тип признака или данные в файле"
+                    )
 
         return len(errors) == 0, errors, df
 
@@ -150,7 +181,7 @@ class ExcelService:
         cols = ["Срок жизни от регистрации", "Количество ОС", "Сумма счета ИО",
                 "%Скидки", "Годовая выручка", "Численность сотрудников",
                 "Время всех сессий в мин", "Причина отключения"]
-        
+
         result["feature_completeness"] = result[cols].notna().sum(axis=1) / len(cols)
 
         def get_top(row):

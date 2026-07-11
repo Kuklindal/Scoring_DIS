@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.scoring_routes import router
+from app.api.features_routes import router as features_router
 
 app = FastAPI(
     title="Скоринг возвращаемости клиентов",
@@ -17,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(features_router)
 
 @app.get("/")
 async def root():

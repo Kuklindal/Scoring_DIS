@@ -22,8 +22,7 @@ DEFAULT_FEATURES = [
 ]
 
 # КОНФИГУРАЦИЯ API
-# Заменить на реальный адрес бэкенда после запуска!!!
-API_BASE_URL = "http://localhost:8000" 
+API_BASE_URL = "http://localhost:8000"
 st.set_page_config(page_title="Churn & Win-back System", layout="wide")
 st.title("Система скоринга клиентов ДИС")
 
@@ -95,6 +94,28 @@ with st.sidebar:
                     
                     response = requests.post(endpoint, files=files)
                     
+# БОКОВАЯ ПАНЕЛЬ
+with st.sidebar:
+    st.header(f"Загрузка данных для: {scoring_mode}")
+
+    if "Активные" in scoring_mode:
+        help_text = "Загрузите файл КИС_дляСкорингаДИС_Сопр.xlsx"
+    else:
+        help_text = "Загрузите файл КИС_дляСкорингаДИС_Откл.xlsx"
+
+    uploaded_file = st.file_uploader("Excel файл (.xlsx)", type=["xlsx"], help=help_text)
+
+    if uploaded_file is not None:
+        st.success(f"Файл выбран")
+
+        if st.button("Рассчитать скоринг", type="primary"):
+            with st.spinner("Обработка данных..."):
+                try:
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+                    params = {"mode": "churn" if "Активные" in scoring_mode else "winback"}
+
+                    response = requests.post(f"{API_BASE_URL}/score", files=files, params=params)
+
                     if response.status_code == 200:
                         data = response.json()
                         st.session_state['result_data'] = data
@@ -155,6 +176,22 @@ if st.session_state['result_data']:
             st.plotly_chart(fig_hist, use_container_width=True)
     
     # Адаптивные заголовки KPI в зависимости от режима
+                        st.error(f"Ошибка ({response.status_code}): {response.text}")
+
+                except Exception as e:
+                    st.error(f"Ошибка соединения: {str(e)}")
+
+# --- ОСНОВНОЙ ЭКРАН ---
+# ВАЖНО: бэкенд ВСЕГДА отдаёт одни и те же имена полей и уровней риска
+# независимо от режима (churn/winback) - final_probability, risk_level,
+# top_factors, а значения risk_level всегда из набора
+# "Низкий" / "Средний" / "Высокий" / "Критический".
+# Отличается только то, как мы это подписываем на экране.
+RISK_LEVELS_ALL = ["Низкий", "Средний", "Высокий", "Критический"]
+
+if st.session_state['result_data']:
+    data = st.session_state['result_data']
+
     if "Активные" in scoring_mode:
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -163,10 +200,8 @@ if st.session_state['result_data']:
             st.metric(label="Высокий риск ухода", value=data['summary']['high_risk'], delta_color="inverse")
         with col3:
             st.metric(label="Средняя вероятность ухода", value=f"{data['summary']['avg_risk']:.2%}")
-            
         risk_label = "Уровень риска"
-        prob_col = "final_probability"
-        top_factors_col = "top_factors"
+        prob_label = "Вероятность ухода"
     else:
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -175,10 +210,12 @@ if st.session_state['result_data']:
             st.metric(label="Высокая возвращаемость", value=data['summary']['high_risk'])
         with col3:
             st.metric(label="Средняя вероятность возврата", value=f"{data['summary']['avg_risk']:.2%}")
-            
         risk_label = "Вероятность возврата"
-        prob_col = "return_probability"
-        top_factors_col = "return_reasons"
+        prob_label = "Вероятность возврата"
+
+    # поля в данных всегда одинаковые, вне зависимости от режима
+    prob_col = "final_probability"
+    top_factors_col = "top_factors"
 
     st.divider()
     
@@ -193,6 +230,23 @@ if st.session_state['result_data']:
     with col_f2:
         filter_competitor = st.checkbox("Есть конкурент")
     
+
+    # ФИЛЬТРЫ
+    st.subheader("Фильтры")
+    clients_list = data.get('clients', [])
+    df_full = pd.DataFrame(clients_list)
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+
+    with col_f1:
+        selected_levels = st.multiselect(risk_label, options=RISK_LEVELS_ALL, default=RISK_LEVELS_ALL)
+        mask = df_full['risk_level'].isin(selected_levels)
+
+    with col_f2:
+        filter_competitor = st.checkbox("Есть конкурент")
+        if filter_competitor:
+            mask &= df_full['has_competitor'] == True
+
     with col_f3:
         filter_threat = st.checkbox("Была угроза")
     
@@ -224,18 +278,21 @@ if st.session_state['result_data']:
             mask &= df_full['has_threat'] == True
 
     df_filtered = df_full[mask].copy()
-    if "final_probability" in df_filtered.columns:
-        df_filtered["final_probability"] = (df_filtered["final_probability"] * 100).round(2).astype(str) + "%"
+    if prob_col in df_filtered.columns:
+        df_filtered[prob_col] = (df_filtered[prob_col] * 100).round(2).astype(str) + "%"
 
     if "feature_completeness" in df_filtered.columns:
         df_filtered["feature_completeness"] = (df_filtered["feature_completeness"] * 100).round(2).astype(str) + "%"
-    # ТАБЛИЦА 
+
+    # ТАБЛИЦА
     st.subheader("Результаты скоринга")
-    
+
     display_cols = [
         'company_name', 'code_to', 'final_probability', 'risk_level', 
         'feature_completeness', 'top_factors', 'competitor', 'has_threat',
         'total_session_minutes'
+        'company_name', 'code_to', prob_col, 'risk_level',
+        'feature_completeness', top_factors_col, 'competitor', 'has_threat'
     ]
     safe_cols = [c for c in display_cols if c in df_filtered.columns]
     
@@ -243,23 +300,19 @@ if st.session_state['result_data']:
     
     # 4. ЭКСПОРТ В EXCEL
     rename_columns = {
-    "company_name": "Контрагент",
-    "code_to": "Код ТО",
-    "final_probability": "Вероятность ухода",
-    "return_probability": "Вероятность возврата",
-    "risk_level": "Уровень риска",
-    "return_level": "Уровень возвращаемости",
-    "feature_completeness": "Полнота данных",
-    "top_factors": "Основные факторы",
-    "return_reasons": "Причины возврата",
-    "competitor": "Конкурент",
-    "has_threat": "Была угроза отключения"
+        "company_name": "Контрагент",
+        "code_to": "Код ТО",
+        "final_probability": prob_label,
+        "risk_level": risk_label,
+        "feature_completeness": "Полнота данных",
+        "top_factors": "Основные факторы",
+        "competitor": "Конкурент",
+        "has_threat": "Была угроза отключения"
     }
 
     df_show = df_filtered[safe_cols].rename(columns=rename_columns)
 
     st.dataframe(df_show, use_container_width=True, hide_index=True)
-   
 
     # ЭКСПОРТ В EXCEL
     if not df_filtered.empty:
@@ -267,11 +320,13 @@ if st.session_state['result_data']:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             sheet_name = "ML_Scoring" if current_mode == 'ml' else "Manual_Scoring"
             df_filtered.to_excel(writer, index=False, sheet_name=sheet_name)
-            
+
         excel_bytes = output.getvalue()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         download_filename = f"scoring_{current_mode}_{timestamp}.xlsx"
         
+        download_filename = f"scoring_{scoring_mode[:6]}_{timestamp}.xlsx"
+
         st.download_button(
             label="Скачать отчет в Excel",
             data=excel_bytes,
