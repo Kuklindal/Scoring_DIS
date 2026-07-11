@@ -21,6 +21,12 @@ DEFAULT_FEATURES = [
     {"name": "Количество ОС", "weight": 0.05, "type": "Числовой", "formula": "step_os"}
 ]
 
+# КОНФИГУРАЦИЯ API
+# Заменить на реальный адрес бэкенда после запуска!!!
+API_BASE_URL = "http://localhost:8000" 
+st.set_page_config(page_title="Churn & Win-back System", layout="wide")
+st.title("Система скоринга клиентов ДИС")
+
 FORMULA_OPTIONS = {
     "binary": "Бинарный (0/1)",
     "min_max": "Min-Max Нормализация",
@@ -148,6 +154,32 @@ if st.session_state['result_data']:
                                     title="Распределение вероятности ухода", height=300)
             st.plotly_chart(fig_hist, use_container_width=True)
     
+    # Адаптивные заголовки KPI в зависимости от режима
+    if "Активные" in scoring_mode:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(label="Всего активных клиентов", value=data['summary']['total_clients'])
+        with col2:
+            st.metric(label="Высокий риск ухода", value=data['summary']['high_risk'], delta_color="inverse")
+        with col3:
+            st.metric(label="Средняя вероятность ухода", value=f"{data['summary']['avg_risk']:.2%}")
+            
+        risk_label = "Уровень риска"
+        prob_col = "final_probability"
+        top_factors_col = "top_factors"
+    else:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(label="Всего отключившихся", value=data['summary']['total_clients'])
+        with col2:
+            st.metric(label="Высокая возвращаемость", value=data['summary']['high_risk'])
+        with col3:
+            st.metric(label="Средняя вероятность возврата", value=f"{data['summary']['avg_risk']:.2%}")
+            
+        risk_label = "Вероятность возврата"
+        prob_col = "return_probability"
+        top_factors_col = "return_reasons"
+
     st.divider()
     
     # 2. ФИЛЬТРЫ 
@@ -187,6 +219,17 @@ if st.session_state['result_data']:
     df_filtered = df_full[mask].copy()
     
     # 3. ТАБЛИЦА РЕЗУЛЬТАТОВ
+        filter_threat = st.checkbox("Была угроза отключения")
+        if filter_threat:
+            mask &= df_full['has_threat'] == True
+
+    df_filtered = df_full[mask].copy()
+    if "final_probability" in df_filtered.columns:
+        df_filtered["final_probability"] = (df_filtered["final_probability"] * 100).round(2).astype(str) + "%"
+
+    if "feature_completeness" in df_filtered.columns:
+        df_filtered["feature_completeness"] = (df_filtered["feature_completeness"] * 100).round(2).astype(str) + "%"
+    # ТАБЛИЦА 
     st.subheader("Результаты скоринга")
     
     display_cols = [
@@ -199,6 +242,26 @@ if st.session_state['result_data']:
     st.dataframe(df_filtered[safe_cols], use_container_width=True, hide_index=True)
     
     # 4. ЭКСПОРТ В EXCEL
+    rename_columns = {
+    "company_name": "Контрагент",
+    "code_to": "Код ТО",
+    "final_probability": "Вероятность ухода",
+    "return_probability": "Вероятность возврата",
+    "risk_level": "Уровень риска",
+    "return_level": "Уровень возвращаемости",
+    "feature_completeness": "Полнота данных",
+    "top_factors": "Основные факторы",
+    "return_reasons": "Причины возврата",
+    "competitor": "Конкурент",
+    "has_threat": "Была угроза отключения"
+    }
+
+    df_show = df_filtered[safe_cols].rename(columns=rename_columns)
+
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+   
+
+    # ЭКСПОРТ В EXCEL
     if not df_filtered.empty:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
