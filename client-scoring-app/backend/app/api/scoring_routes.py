@@ -1,12 +1,14 @@
 import uuid
 import json
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form
 from fastapi.responses import JSONResponse
+
 from app.services.excel_service import ExcelService
 from app.services.score_service import ScoreService
 from app.services.response_service import ResponseService
-from app.schemas.scoring_schema import FileUploadResponse
+from app.services.feature_config_service import FeatureConfigService
 from app.schemas.manual_score_schema import ManualScoreRequest
 
 router = APIRouter()
@@ -15,7 +17,7 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@router.post("/score", response_model=FileUploadResponse)
+@router.post("/score")
 async def upload_file(file: UploadFile = File(...), mode: str = Query(...)):
     try:
         if not file.filename.endswith(('.xlsx', '.xls')):
@@ -36,45 +38,53 @@ async def upload_file(file: UploadFile = File(...), mode: str = Query(...)):
 
         result_df = ScoreService.calculate_auto_scores(df, mode)
 
-        result_df = result_df.rename(columns={
-            "final_probability": "final_probability",
-            "risk_level": "risk_level",
-            "feature_completeness": "feature_completeness",
-            "top_factors": "top_factors"
-        })
-
         response_data = ResponseService.prepare_response(result_df)
+        response_data["file_id"] = file_id
+        response_data["message"] = "Файл успешно обработан"
+        response_data["status"] = "success"
         ResponseService.save_result(response_data, file_id)
 
         temp_path.unlink()
 
-        return FileUploadResponse(
-            file_id=file_id,
-            message="Файл успешно обработан",
-            status="success"
-        )
+        return JSONResponse(content=response_data)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Внутренняя ошибка: {str(e)}")
 
 
-@router.post("/manual-score", response_model=FileUploadResponse)
+@router.post("/manual-score")
 async def manual_score(
         file: UploadFile = File(...),
-        features: str = Form(...)
+        features: Optional[str] = Form(None),
 ):
     try:
         if not file.filename.endswith(('.xlsx', '.xls')):
             raise HTTPException(400, "Неверный формат. Ожидается .xlsx или .xls")
 
-        try:
-            request_data = json.loads(features)
-            request = ManualScoreRequest(**request_data)
-        except json.JSONDecodeError:
-            raise HTTPException(400, "Неверный формат JSON в поле features")
-        except Exception as e:
-            raise HTTPException(400, f"Ошибка валидации признаков: {str(e)}")
+        if features:
+            try:
+                request_data = json.loads(features)
+                request = ManualScoreRequest(**request_data)
+            except json.JSONDecodeError:
+                raise HTTPException(400, "Неверный формат JSON в поле features")
+            except Exception as e:
+                raise HTTPException(400, f"Ошибка валидации признаков: {str(e)}")
+            feature_list = request.features
+        else:
+            feature_list = FeatureConfigService.list_features()
+            if not feature_list:
+                raise HTTPException(
+                    400,
+                    "Признаки не переданы в запросе и не сконфигурированы через /features"
+                )
+            total_weight = sum(f.weight for f in feature_list)
+            if not (0.99 <= total_weight <= 1.01):
+                raise HTTPException(
+                    400,
+                    f"Сумма весов сконфигурированных признаков должна быть равна 1.0 "
+                    f"(сейчас {total_weight:.4f}). Проверьте /features"
+                )
 
         file_id = str(uuid.uuid4())[:8]
         temp_path = UPLOAD_DIR / f"{file_id}_{file.filename}"
@@ -83,32 +93,22 @@ async def manual_score(
             content = await file.read()
             f.write(content)
 
-        is_valid, errors, df = ExcelService.validate_manual_file(str(temp_path))
+        is_valid, errors, df = ExcelService.validate_manual_file(str(temp_path), feature_list)
 
         if not is_valid:
             temp_path.unlink()
             raise HTTPException(400, f"Ошибка валидации файла: {', '.join(errors)}")
 
-        missing_columns = []
-        for feature in request.features:
-            if feature.name not in df.columns:
-                missing_columns.append(feature.name)
-
-        if missing_columns:
-            temp_path.unlink()
-            raise HTTPException(400, f"Отсутствуют колонки в файле: {', '.join(missing_columns)}")
-
-        result_df = ScoreService.calculate_manual_score(df, request.features)
+        result_df = ScoreService.calculate_manual_score(df, feature_list)
         response_data = ResponseService.prepare_response(result_df)
+        response_data["file_id"] = file_id
+        response_data["message"] = "Ручной скоринг выполнен успешно"
+        response_data["status"] = "success"
         ResponseService.save_result(response_data, file_id)
 
         temp_path.unlink()
 
-        return FileUploadResponse(
-            file_id=file_id,
-            message="Ручной скоринг выполнен успешно",
-            status="success"
-        )
+        return JSONResponse(content=response_data)
 
     except HTTPException:
         raise
