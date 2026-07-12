@@ -1,129 +1,266 @@
-import uuid
+import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.services.excel_service import ExcelService
-from app.services.score_service import ScoreService
-from app.services.response_service import ResponseService
-from app.services.feature_config_service import FeatureConfigService
 from app.schemas.manual_score_schema import ManualScoreRequest
+from app.services.excel_service import ExcelService
+from app.services.feature_config_service import FeatureConfigService
+from app.services.response_service import ResponseService
+from app.services.score_service import ScoreService
+from scoring import pipeline
 
-router = APIRouter()
+
+router = APIRouter(tags=["scoring"])
 
 UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def _delete_temp_file(
+    file: UploadFile,
+    temp_path: Path | None,
+) -> None:
+    """
+    Закрывает UploadFile и удаляет временный файл.
+    Несколько попыток нужны на Windows, где файл может кратко оставаться занят.
+    """
+    await file.close()
+
+    if temp_path is None or not temp_path.exists():
+        return
+
+    for attempt in range(5):
+        try:
+            temp_path.unlink()
+            return
+        except PermissionError:
+            if attempt == 4:
+                print(
+                    f"Не удалось удалить временный файл: {temp_path}"
+                )
+                return
+            await asyncio.sleep(0.2)
 
 
 @router.post("/score")
-async def upload_file(file: UploadFile = File(...), mode: str = Query(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    mode: str = Query(...),
+):
+    temp_path: Path | None = None
+
     try:
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            raise HTTPException(400, "Неверный формат. Ожидается .xlsx или .xls")
+        if not file.filename:
+            raise HTTPException(400, "Имя файла отсутствует")
+
+        if not file.filename.lower().endswith((".xlsx", ".xls")):
+            raise HTTPException(
+                400,
+                "Неверный формат. Ожидается .xlsx или .xls",
+            )
+
+        if mode not in {"churn", "winback"}:
+            raise HTTPException(
+                400,
+                "Параметр mode должен быть churn или winback",
+            )
 
         file_id = str(uuid.uuid4())[:8]
-        temp_path = UPLOAD_DIR / f"{file_id}_{file.filename}"
+        safe_filename = Path(file.filename).name
+        temp_path = UPLOAD_DIR / f"{file_id}_{safe_filename}"
 
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        content = await file.read()
 
-        is_valid, errors, df = ExcelService.validate_file(str(temp_path), mode)
+        if not content:
+            raise HTTPException(400, "Загруженный файл пуст")
+
+        temp_path.write_bytes(content)
+
+        is_valid, errors, df = ExcelService.validate_file(
+            str(temp_path),
+            mode,
+        )
 
         if not is_valid:
-            temp_path.unlink()
-            raise HTTPException(400, f"Ошибка валидации: {', '.join(errors)}")
+            raise HTTPException(
+                400,
+                f"Ошибка валидации: {', '.join(errors)}",
+            )
 
-        result_df = ScoreService.calculate_auto_scores(df, mode)
+        # Здесь действительно вызывается CatBoost pipeline.
+        result_df = pipeline.calculate_scores(df)
 
+        # ResponseService теперь понимает имена Final_Probability,
+        # Risk_Level, Feature_Completeness и Top_Factors.
         response_data = ResponseService.prepare_response(result_df)
         response_data["file_id"] = file_id
         response_data["message"] = "Файл успешно обработан"
         response_data["status"] = "success"
+
         ResponseService.save_result(response_data, file_id)
 
-        temp_path.unlink()
-
         return JSONResponse(content=response_data)
+
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Внутренняя ошибка: {str(e)}")
+
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            f"Внутренняя ошибка: {exc}",
+        ) from exc
+
+    finally:
+        await _delete_temp_file(file, temp_path)
 
 
-@router.post("/manual-score")
+@router.post("/score/manual")
 async def manual_score(
-        file: UploadFile = File(...),
-        features: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    config: Optional[str] = Form(None),
 ):
-    try:
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            raise HTTPException(400, "Неверный формат. Ожидается .xlsx или .xls")
+    temp_path: Path | None = None
 
-        if features:
+    try:
+        if not file.filename:
+            raise HTTPException(400, "Имя файла отсутствует")
+
+        if not file.filename.lower().endswith((".xlsx", ".xls")):
+            raise HTTPException(
+                400,
+                "Неверный формат. Ожидается .xlsx или .xls",
+            )
+
+        if config:
             try:
-                request_data = json.loads(features)
+                request_data = json.loads(config)
                 request = ManualScoreRequest(**request_data)
-            except json.JSONDecodeError:
-                raise HTTPException(400, "Неверный формат JSON в поле features")
-            except Exception as e:
-                raise HTTPException(400, f"Ошибка валидации признаков: {str(e)}")
-            feature_list = request.features
+                feature_list = request.features
+
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    400,
+                    "Неверный JSON в поле config",
+                ) from exc
+
+            except Exception as exc:
+                raise HTTPException(
+                    400,
+                    f"Ошибка валидации признаков: {exc}",
+                ) from exc
+
         else:
             feature_list = FeatureConfigService.list_features()
+
             if not feature_list:
                 raise HTTPException(
                     400,
-                    "Признаки не переданы в запросе и не сконфигурированы через /features"
+                    "Признаки не переданы и не настроены через /features",
                 )
-            total_weight = sum(f.weight for f in feature_list)
-            if not (0.99 <= total_weight <= 1.01):
-                raise HTTPException(
-                    400,
-                    f"Сумма весов сконфигурированных признаков должна быть равна 1.0 "
-                    f"(сейчас {total_weight:.4f}). Проверьте /features"
-                )
+
+        risk_total_weight = round(
+            sum(
+                float(feature.risk_weight)
+                for feature in feature_list
+            ),
+            3,
+        )
+        value_total_weight = round(
+            sum(
+                float(feature.value_weight)
+                for feature in feature_list
+            ),
+            3,
+        )
+
+        if round(risk_total_weight, 3) != 1.000:
+            raise HTTPException(
+                400,
+                "Сумма весов риска должна быть равна 1.000. "
+                f"Текущая сумма: {risk_total_weight:.3f}",
+            )
+
+        if round(value_total_weight, 3) != 1.000:
+            raise HTTPException(
+                400,
+                "Сумма весов ценности должна быть равна 1.000. "
+                f"Текущая сумма: {value_total_weight:.3f}",
+            )
 
         file_id = str(uuid.uuid4())[:8]
-        temp_path = UPLOAD_DIR / f"{file_id}_{file.filename}"
+        safe_filename = Path(file.filename).name
+        temp_path = UPLOAD_DIR / f"{file_id}_{safe_filename}"
 
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        content = await file.read()
 
-        is_valid, errors, df = ExcelService.validate_manual_file(str(temp_path), feature_list)
+        if not content:
+            raise HTTPException(400, "Загруженный файл пуст")
+
+        temp_path.write_bytes(content)
+
+        is_valid, errors, df = ExcelService.validate_manual_file(
+            str(temp_path),
+            feature_list,
+        )
 
         if not is_valid:
-            temp_path.unlink()
-            raise HTTPException(400, f"Ошибка валидации файла: {', '.join(errors)}")
+            raise HTTPException(
+                400,
+                f"Ошибка валидации файла: {', '.join(errors)}",
+            )
 
-        result_df = ScoreService.calculate_manual_score(df, feature_list)
-        response_data = ResponseService.prepare_response(result_df)
+        result_df = ScoreService.calculate_manual_score(
+            df,
+            feature_list,
+        )
+
+        selected_feature_names = [
+            str(feature.name).strip()
+            for feature in feature_list
+        ]
+
+        # Передаём текущий список признаков.
+        # Добавленные попадут в JSON/Excel, удалённые — нет.
+        response_data = ResponseService.prepare_response(
+            result_df,
+            extra_columns=selected_feature_names,
+        )
         response_data["file_id"] = file_id
         response_data["message"] = "Ручной скоринг выполнен успешно"
         response_data["status"] = "success"
-        ResponseService.save_result(response_data, file_id)
+        response_data["selected_features"] = selected_feature_names
+        response_data["source_sheet"] = df.attrs.get("source_sheet")
 
-        temp_path.unlink()
+        ResponseService.save_result(response_data, file_id)
 
         return JSONResponse(content=response_data)
 
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(500, f"Внутренняя ошибка: {str(e)}")
+
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            f"Внутренняя ошибка: {exc}",
+        ) from exc
+
+    finally:
+        await _delete_temp_file(file, temp_path)
 
 
 @router.get("/download/{file_id}")
 async def download_result(file_id: str):
-    try:
-        result = ResponseService.get_result(file_id)
-        if result is None:
-            raise HTTPException(404, f"Результат {file_id} не найден")
-        return JSONResponse(content=result, media_type="application/json")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Ошибка: {str(e)}")
+    result = ResponseService.get_result(file_id)
+
+    if result is None:
+        raise HTTPException(
+            404,
+            f"Результат {file_id} не найден",
+        )
+
+    return JSONResponse(content=result)

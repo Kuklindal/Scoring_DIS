@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.scoring_routes import router
+from app.api.scoring_routes import router as scoring_router
 from app.api.features_routes import router as features_router
 
 app = FastAPI(
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(router)
+app.include_router(scoring_router)
 app.include_router(features_router)
 
 @app.get("/")
