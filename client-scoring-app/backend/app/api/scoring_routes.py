@@ -13,6 +13,7 @@ from app.services.feature_config_service import FeatureConfigService
 from app.services.response_service import ResponseService
 from app.services.score_service import ScoreService
 from scoring import pipeline
+from scoring import winback_pipeline
 
 
 router = APIRouter(tags=["scoring"])
@@ -92,11 +93,17 @@ async def upload_file(
                 f"Ошибка валидации: {', '.join(errors)}",
             )
 
-        # Здесь действительно вызывается CatBoost pipeline.
-        result_df = pipeline.calculate_scores(df)
+        # Для активных клиентов (churn) - CatBoost pipeline.
+        # Для ушедших клиентов (winback) - отдельный pipeline,
+        # который дополнительно учитывает "Причина отключения".
+        if mode == "churn":
+            result_df = pipeline.calculate_scores(df)
+        else:
+            result_df = winback_pipeline.calculate_winback_scores(df)
 
-        # ResponseService теперь понимает имена Final_Probability,
-        # Risk_Level, Feature_Completeness и Top_Factors.
+        # ResponseService понимает имена Final_Probability,
+        # Risk_Level, Feature_Completeness и Top_Factors
+        # независимо от режима (churn/winback).
         response_data = ResponseService.prepare_response(result_df)
         response_data["file_id"] = file_id
         response_data["message"] = "Файл успешно обработан"
@@ -225,7 +232,7 @@ async def manual_score(
         ]
 
         # Передаём текущий список признаков.
-        # Добавленные попадут в JSON/Excel, удалённые — нет.
+        # Добавленные попадут в JSON/Excel, удалённые - нет.
         response_data = ResponseService.prepare_response(
             result_df,
             extra_columns=selected_feature_names,
