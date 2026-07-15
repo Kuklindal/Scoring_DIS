@@ -9,6 +9,16 @@ import pandas as pd
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Фронт для режима "Ушедшие (Возврат)" ждёт return_level с этими
+# метками (RETURN_LEVELS_ALL / risk_color_map в app.py), а не
+# risk_level ("Низкий"/"Средний"/"Высокий"/"Критический").
+RETURN_LEVEL_MAP = {
+    "Низкий": "Низкая",
+    "Средний": "Средняя",
+    "Высокий": "Высокая",
+    "Критический": "Очень высокая",
+}
+
 
 def _first_existing(row: pd.Series, names: Iterable[str], default=None):
     """Возвращает первое найденное значение по одному из возможных имён."""
@@ -139,7 +149,7 @@ class ResponseService:
         """
         extra_columns:
             Признаки ручного скоринга, которые необходимо вернуть во фронт.
-            Поэтому добавленный признак попадёт в Excel, а удалённый — нет.
+            Поэтому добавленный признак попадёт в Excel, а удалённый - нет.
         """
         clients = []
         extra_columns = extra_columns or []
@@ -287,6 +297,24 @@ class ResponseService:
                 ),
                 "top_factors": _json_safe(top_factors),
             }
+
+            # Алиасы для режима "Ушедшие (Возврат)" - фронт (app.py)
+            # ожидает return_level (с метками "Низкая"/"Средняя"/
+            # "Высокая"/"Очень высокая") и disconnection_reason
+            # наравне с risk_level/"Причина отключения". Значения
+            # безвредны и для активных клиентов (просто не используются
+            # там интерфейсом).
+            reason_value = _first_existing(
+                row,
+                ["Причина отключения", "disconnection_reason"],
+                None,
+            )
+            client["disconnection_reason"] = (
+                str(reason_value) if pd.notna(reason_value) else None
+            )
+            client["return_level"] = RETURN_LEVEL_MAP.get(
+                risk_level, risk_level
+            )
 
             # Добавляем только признаки, которые выбраны сейчас.
             # Если пользователь удалил признак, его имени не будет

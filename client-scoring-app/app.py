@@ -8,7 +8,6 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-
 API_BASE_URL = "http://localhost:8000"
 
 # --- ДЕФОЛТНЫЕ ПРИЗНАКИ ДЛЯ АКТИВНЫХ КЛИЕНТОВ (СОПР) ---
@@ -220,6 +219,13 @@ def init_session_state() -> None:
     # Выбираем дефолтные признаки в зависимости от типа клиента
     default_feats = DEFAULT_FEATURES_ACTIVE if st.session_state["client_type"] == "active" else DEFAULT_FEATURES_CHURNED
 
+    # Добавляем состояние типа клиента (active / churned)
+    if "client_type" not in st.session_state:
+        st.session_state["client_type"] = "active"
+
+    # Выбираем дефолтные признаки в зависимости от типа клиента
+    default_feats = DEFAULT_FEATURES_ACTIVE if st.session_state["client_type"] == "active" else DEFAULT_FEATURES_CHURNED
+
     if "manual_features" not in st.session_state:
         st.session_state["manual_features"] = [
             feature.copy() for feature in default_feats
@@ -375,21 +381,21 @@ def clear_results_callback() -> None:
 
     for key in list(st.session_state.keys()):
         if (
-            key.startswith("risk_weight_")
-            or key.startswith("value_weight_")
-            or key.startswith("group_")
-            or key.startswith("type_")
-            or key.startswith("formula_")
-            or key.startswith("delete_feature_")
-            or key in {
-                "new_feature_name",
-                "new_feature_group",
-                "new_feature_risk_weight",
-                "new_feature_value_weight",
-                "new_feature_type",
-                "new_feature_formula",
-                "normalize_manual_weights",
-            }
+                key.startswith("risk_weight_")
+                or key.startswith("value_weight_")
+                or key.startswith("group_")
+                or key.startswith("type_")
+                or key.startswith("formula_")
+                or key.startswith("delete_feature_")
+                or key in {
+            "new_feature_name",
+            "new_feature_group",
+            "new_feature_risk_weight",
+            "new_feature_value_weight",
+            "new_feature_type",
+            "new_feature_formula",
+            "normalize_manual_weights",
+        }
         ):
             keys_to_delete.append(key)
 
@@ -629,16 +635,16 @@ def render_manual_scoring_constructor() -> None:
         )
 
     if st.button(
-        "Добавить признак",
-        type="primary",
-        use_container_width=True,
+            "Добавить признак",
+            type="primary",
+            use_container_width=True,
     ):
         if not new_name.strip():
             st.warning("Введите название признака.")
         elif any(
-            feature["name"].strip().lower()
-            == new_name.strip().lower()
-            for feature in features
+                feature["name"].strip().lower()
+                == new_name.strip().lower()
+                for feature in features
         ):
             st.warning("Признак с таким названием уже существует.")
         else:
