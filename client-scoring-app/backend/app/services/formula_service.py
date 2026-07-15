@@ -1,5 +1,7 @@
 import pandas as pd
 
+from app.services.excel_service import REASON_MULTIPLIERS
+
 
 FORMULA_ALIASES = {
     "linear": "linear",
@@ -16,12 +18,17 @@ FORMULA_ALIASES = {
     "step_os": "step",
 
     "none": "none",
+
+    # Добавлено для скоринга возвращаемости (winback):
+    "binary_inverse": "binary_inverse",
+    "reason_multiplier": "reason_multiplier",
+    "categorical": "categorical",
 }
 
 
 class FormulaService:
     """
-    Применяет формулу к уже очищенной числовой колонке.
+    Применяет формулу к уже очищенной колонке.
     Поддерживает названия формул из backend и Streamlit frontend.
     """
 
@@ -34,10 +41,45 @@ class FormulaService:
             raise ValueError(
                 f"Неизвестная формула: '{formula}'. "
                 "Допустимые значения: linear/min_max, "
-                "inverse/min_max_inverse, binary, step/step_os, none."
+                "inverse/min_max_inverse, binary, binary_inverse, "
+                "step/step_os, reason_multiplier, categorical, none."
             )
 
         return normalized
+
+    @staticmethod
+    def _apply_reason_multiplier(series: pd.Series) -> pd.Series:
+        """
+        Причина отключения -> вес возврата (0..1).
+
+        Переиспользует уже существующий REASON_MULTIPLIERS
+        (тот же справочник, что и в ExcelService), чтобы не
+        дублировать бизнес-логику весов причин отключения.
+        Пустая причина -> 0.0, неизвестная причина -> 1.0
+        (нейтральный вес, как и в ExcelService.get_reason_weight).
+        """
+
+        def get_weight(value):
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return 0.0
+            return REASON_MULTIPLIERS.get(value, 1.0)
+
+        return series.apply(get_weight).astype(float).clip(0.0, 1.0)
+
+    @staticmethod
+    def _apply_categorical_presence(series: pd.Series) -> pd.Series:
+        """
+        Общий категориальный признак без справочника весов:
+        просто "заполнено / не заполнено", аналогично binary,
+        но без приведения текста к 0/1 по словам "да"/"нет".
+        """
+
+        def get_presence(value):
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return 0.0
+            return 1.0 if str(value).strip() else 0.0
+
+        return series.apply(get_presence).astype(float)
 
     @staticmethod
     def apply_formula(
@@ -46,6 +88,16 @@ class FormulaService:
         feature_type: str,
     ) -> pd.Series:
         normalized_formula = FormulaService.normalize_formula(formula)
+
+        # Эти две формулы работают с исходным текстом (категориальные
+        # значения), поэтому обрабатываются до pd.to_numeric ниже -
+        # иначе строки превратились бы в NaN.
+        if normalized_formula == "reason_multiplier":
+            return FormulaService._apply_reason_multiplier(series)
+
+        if normalized_formula == "categorical":
+            return FormulaService._apply_categorical_presence(series)
+
         numeric_series = pd.to_numeric(series, errors="coerce")
 
         if normalized_formula == "linear":
@@ -87,6 +139,15 @@ class FormulaService:
         if normalized_formula == "binary":
             return (
                 numeric_series
+                .fillna(0.0)
+                .clip(0.0, 1.0)
+                .astype(float)
+            )
+
+        if normalized_formula == "binary_inverse":
+            return (
+                1.0
+                - numeric_series
                 .fillna(0.0)
                 .clip(0.0, 1.0)
                 .astype(float)

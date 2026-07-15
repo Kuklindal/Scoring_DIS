@@ -15,14 +15,14 @@ def clean_numeric_column(series: pd.Series) -> pd.Series:
     )
 
 
-def clean_reason_column(series: pd.Series) -> pd.Series:
+def reason_to_multiplier(series: pd.Series) -> pd.Series:
     """
-    Причина отключения -> числовой вес (Reason_Weight).
+    Причина отключения -> числовой множитель (Reason_Multiplier).
 
-    Используем уже существующие коэффициенты REASON_MULTIPLIERS
-    из ExcelService, чтобы не дублировать бизнес-логику весов причин.
-    Пустая причина -> 0.0, неизвестная причина -> 1.0 (нейтральный вес),
-    как и в ExcelService.get_reason_weight.
+    Переиспользует REASON_MULTIPLIERS из ExcelService (тот же
+    справочник, что и в формульном скоринге), чтобы не дублировать
+    бизнес-логику весов причин. Пустая причина -> 0.0, неизвестная
+    причина -> 1.0 (нейтральный множитель).
     """
 
     def get_weight(reason):
@@ -31,6 +31,26 @@ def clean_reason_column(series: pd.Series) -> pd.Series:
         return REASON_MULTIPLIERS.get(reason, 1.0)
 
     return series.apply(get_weight).astype(float)
+
+
+def os_step_score(series: pd.Series) -> pd.Series:
+    """
+    Ступенчатая шкала по количеству ОС (как в FORMULA_OPTIONS
+    фронта: "Ступенчатая (ОС: 1=30, 2=70, 3+=100)").
+    """
+
+    numeric = pd.to_numeric(series, errors="coerce").fillna(0)
+
+    def step(value: float) -> float:
+        if value <= 0:
+            return 0.0
+        if value == 1:
+            return 30.0
+        if value == 2:
+            return 70.0
+        return 100.0
+
+    return numeric.apply(step).astype(float)
 
 
 def preprocess_winback_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -42,27 +62,42 @@ def preprocess_winback_data(df: pd.DataFrame) -> pd.DataFrame:
         "Количество_ОС_Нормализация": "Количество_ОС_Н"
     })
 
-    # Конкурент -> бинарный признак
+    # Конкурент/угроза -> бинарные признаки, затем инверсия
+    # (модель обучалась на Has_Threat_Inv/Has_Competitor_Inv).
     if "Конкурент" in df.columns:
-        df["Has_Competitor"] = df["Конкурент"].apply(
+        has_competitor = df["Конкурент"].apply(
             lambda x: 1 if pd.notna(x) and str(x).strip().lower() not in ["нет", "nan", ""] else 0
         )
     else:
-        df["Has_Competitor"] = 0
+        has_competitor = pd.Series(0, index=df.index)
 
-    # Была угроза отключения -> бинарный признак
     if "Была угроза откл" in df.columns:
-        df["Has_Threat"] = df["Была угроза откл"].apply(
+        has_threat = df["Была угроза откл"].apply(
             lambda x: 1 if str(x).strip().lower() == "да" else 0
         )
     else:
-        df["Has_Threat"] = 0
+        has_threat = pd.Series(0, index=df.index)
 
-    # Причина отключения -> числовой вес (есть только у ушедших клиентов)
+    df["Has_Competitor_Inv"] = 1.0 - has_competitor.astype(float)
+    df["Has_Threat_Inv"] = 1.0 - has_threat.astype(float)
+
+    # Причина отключения -> числовой множитель (Reason_Multiplier).
+    # Сама колонка "Причина отключения" тоже остаётся в df как есть
+    # (строкой) - модель использует её отдельно, как нативный
+    # категориальный признак CatBoost.
     if "Причина отключения" in df.columns:
-        df["Reason_Weight"] = clean_reason_column(df["Причина отключения"])
+        df["Reason_Multiplier"] = reason_to_multiplier(df["Причина отключения"])
     else:
-        df["Reason_Weight"] = 1.0
+        df["Reason_Multiplier"] = 0.0
+        df["Причина отключения"] = None
+
+    if "Количество ОС" in df.columns:
+        df["OS_Step_Score"] = os_step_score(df["Количество ОС"])
+    else:
+        df["OS_Step_Score"] = 0.0
+
+    if "Вид деятельности" not in df.columns:
+        df["Вид деятельности"] = None
 
     numeric_cols = [
         "Код ТО",

@@ -22,6 +22,11 @@ TYPE_ALIASES = {
     "percent": "percent",
     "процентный": "percent",
     "percentage": "percent",
+    # Добавлено для скоринга возвращаемости (winback):
+    # "Причина отключения" и подобные текстовые поля не приводятся
+    # к числу, интерпретацию берёт на себя FormulaService.
+    "categorical": "categorical",
+    "категориальный": "categorical",
 }
 
 
@@ -30,10 +35,10 @@ class DataCleaningService:
     Очистка колонок перед ручным скорингом.
 
     Поддерживаются как системные значения типов:
-      binary / numeric / percent
+      binary / numeric / percent / categorical
 
     так и значения, которые отправляет Streamlit:
-      Бинарный / Числовой / Процентный
+      Бинарный / Числовой / Процентный / Категориальный
     """
 
     @staticmethod
@@ -164,6 +169,24 @@ class DataCleaningService:
         return series.apply(parse).astype(float)
 
     @staticmethod
+    def clean_categorical(series: pd.Series) -> pd.Series:
+        """
+        Категориальный тип НЕ приводится к числу - значения
+        (например, текст причины отключения) остаются строками.
+        Дальнейшую интерпретацию (например, вес причины отключения)
+        выполняет FormulaService по исходному тексту.
+        """
+
+        def parse(value):
+            if pd.isna(value):
+                return None
+
+            text = str(value).strip()
+            return text if text else None
+
+        return series.apply(parse)
+
+    @staticmethod
     def clean_column(
         series: pd.Series,
         feature_type: str,
@@ -181,10 +204,14 @@ class DataCleaningService:
         if normalized_type == "binary":
             return DataCleaningService.clean_binary(series)
 
+        if normalized_type == "categorical":
+            return DataCleaningService.clean_categorical(series)
+
         raise ValueError(
             f"Неизвестный тип признака: '{feature_type}'. "
             "Допустимые типы: binary/Бинарный, "
-            "numeric/Числовой, percent/Процентный."
+            "numeric/Числовой, percent/Процентный, "
+            "categorical/Категориальный."
         )
 
     @staticmethod
@@ -195,7 +222,8 @@ class DataCleaningService:
         """
         Доля непустых исходных значений, которые удалось распознать.
 
-        Для binary любое непустое значение распознаётся, поэтому доля будет 1.
+        Для binary/categorical любое непустое значение распознаётся,
+        поэтому доля будет 1.
         """
         raw_filled = raw.notna() & (
             raw.astype(str).str.strip() != ""

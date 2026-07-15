@@ -12,25 +12,31 @@ FeatureType = Literal[
     "Бинарный",
     "Числовой",
     "Процентный",
+    "Категориальный",
     "binary",
     "numeric",
     "percent",
+    "categorical",
 ]
 
 FeatureGroup = Literal[
     "risk",
     "value",
     "both",
+    "return",
 ]
 
 FormulaType = Literal[
     "binary",
+    "binary_inverse",
     "min_max",
     "min_max_inverse",
     "step_os",
     "linear",
     "inverse",
     "step",
+    "reason_multiplier",
+    "categorical",
     "none",
 ]
 
@@ -89,7 +95,14 @@ class FeatureConfig(BaseModel):
         }
 
         Старый weight переносится в risk_weight,
-        value_weight или оба поля — в зависимости от group.
+        value_weight или оба поля - в зависимости от group.
+
+        Текущий фронт для group="return" уже присылает
+        risk_weight/value_weight напрямую (risk_weight=0,
+        value_weight=<вес>), поэтому миграция для него не
+        требуется - но group "return" всё равно ведёт себя
+        как "both" на случай, если где-то придёт старый формат
+        с полем "weight".
         """
         if not isinstance(data, dict):
             return data
@@ -101,13 +114,13 @@ class FeatureConfig(BaseModel):
 
         if old_weight is not None:
             if (
-                group in {"risk", "both"}
+                group in {"risk", "both", "return"}
                 and "risk_weight" not in values
             ):
                 values["risk_weight"] = old_weight
 
             if (
-                group in {"value", "both"}
+                group in {"value", "both", "return"}
                 and "value_weight" not in values
             ):
                 values["value_weight"] = old_weight
@@ -139,6 +152,11 @@ class FeatureConfig(BaseModel):
                 "бинарный",
             }:
                 self.formula = "binary"
+            elif normalized_type in {
+                "categorical",
+                "категориальный",
+            }:
+                self.formula = "reason_multiplier"
             else:
                 self.formula = "min_max"
 
@@ -165,16 +183,33 @@ class ManualScoreRequest(BaseModel):
             for feature in self.features
         )
 
-        if round(risk_total, 3) != 1.000:
+        # Признаки для "возврата ушедших клиентов" (group="return")
+        # используют только value_weight, risk_weight у них всегда 0 -
+        # поэтому сумма весов риска проверяется, только если риск
+        # вообще участвует в расчёте (и наоборот для ценности).
+        has_risk_component = any(
+            feature.risk_weight > 0 for feature in self.features
+        )
+        has_value_component = any(
+            feature.value_weight > 0 for feature in self.features
+        )
+
+        if has_risk_component and round(risk_total, 3) != 1.000:
             raise ValueError(
                 "Сумма весов риска должна быть равна 1.000 "
                 f"(сейчас {risk_total:.3f})"
             )
 
-        if round(value_total, 3) != 1.000:
+        if has_value_component and round(value_total, 3) != 1.000:
             raise ValueError(
                 "Сумма весов ценности должна быть равна 1.000 "
                 f"(сейчас {value_total:.3f})"
+            )
+
+        if not has_risk_component and not has_value_component:
+            raise ValueError(
+                "Хотя бы один признак должен иметь ненулевой "
+                "risk_weight или value_weight"
             )
 
         normalized_names = [
