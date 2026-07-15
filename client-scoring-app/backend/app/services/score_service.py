@@ -111,11 +111,24 @@ class ScoreService:
         risk_score = risk_score.clip(0.0, 1.0)
         value_score = value_score.clip(0.0, 1.0)
 
-        final_probability = (
-            risk_score * FINAL_RISK_WEIGHT
-            + value_score * FINAL_VALUE_WEIGHT
-        ).clip(0.0, 1.0)
+        # Если все признаки относятся к группе return,
+        # выполняется скоринг возвращаемости ушедших клиентов.
+        is_return_scoring = bool(features) and all(
+            str(feature.group).strip().lower() == "return"
+            for feature in features
+        )
 
+        if is_return_scoring:
+            # value_score здесь фактически является скором возвращаемости.
+            # Дополнительно умножать его на 0.35 не нужно.
+            final_probability = value_score.copy()
+        else:
+            # Обычная формула для активных клиентов:
+            # риск ухода + ценность клиента.
+            final_probability = (
+                risk_score * FINAL_RISK_WEIGHT
+                + value_score * FINAL_VALUE_WEIGHT
+            ).clip(0.0, 1.0)
         def get_risk(probability: float) -> str:
             for low, high, level in RISK_LEVELS:
                 if low <= probability < high:
@@ -137,15 +150,21 @@ class ScoreService:
 
         combined_contributions = {}
 
-        for name, contribution in risk_contributions.items():
-            combined_contributions[f"Риск: {name}"] = (
-                contribution * FINAL_RISK_WEIGHT
-            )
+        if is_return_scoring:
+            for name, contribution in value_contributions.items():
+                combined_contributions[
+                    f"Возвращаемость: {name}"
+                ] = contribution
+        else:
+            for name, contribution in risk_contributions.items():
+                combined_contributions[f"Риск: {name}"] = (
+                    contribution * FINAL_RISK_WEIGHT
+                )
 
-        for name, contribution in value_contributions.items():
-            combined_contributions[f"Ценность: {name}"] = (
-                contribution * FINAL_VALUE_WEIGHT
-            )
+            for name, contribution in value_contributions.items():
+                combined_contributions[f"Ценность: {name}"] = (
+                    contribution * FINAL_VALUE_WEIGHT
+                )
 
         contribution_frame = pd.DataFrame(
             combined_contributions,

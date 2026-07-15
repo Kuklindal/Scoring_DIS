@@ -161,14 +161,6 @@ DEFAULT_FEATURES_CHURNED = [
         "formula": "min_max",
     },
     {
-        "name": "Вид деятельности",
-        "group": "return",
-        "risk_weight": 0.0,
-        "value_weight": 0.05,
-        "type": "Категориальный",
-        "formula": "categorical",
-    },
-    {
         "name": "Была угроза отключения",
         "group": "return",
         "risk_weight": 0.0,
@@ -240,20 +232,20 @@ def init_session_state() -> None:
 
 def sync_manual_features_from_widgets() -> None:
     features = st.session_state.get("manual_features", [])
+    client_type = st.session_state.get("client_type", "active")
 
     for index, feature in enumerate(features):
         mapping = {
-            "group": f"group_{index}",
-            "risk_weight": f"risk_weight_{index}",
-            "value_weight": f"value_weight_{index}",
-            "type": f"type_{index}",
-            "formula": f"formula_{index}",
+            "group": f"{client_type}_group_{index}",
+            "risk_weight": f"{client_type}_risk_weight_{index}",
+            "value_weight": f"{client_type}_value_weight_{index}",
+            "type": f"{client_type}_type_{index}",
+            "formula": f"{client_type}_formula_{index}",
         }
 
         for field, key in mapping.items():
             if key in st.session_state:
                 feature[field] = st.session_state[key]
-
 
 def get_group_total(group: str) -> float:
     """
@@ -361,7 +353,39 @@ def send_scoring_request(
         st.error("Backend вернул ответ, который не является JSON.")
         return None
 
+def clear_manual_widget_state() -> None:
+    """
+    Удаляет состояния виджетов конструктора ручного скоринга.
 
+    Это необходимо при переключении типа клиента, потому что
+    Streamlit хранит значения виджетов по ключам type_0,
+    formula_0, value_weight_0 и так далее.
+    """
+    widget_prefixes = (
+        "group_",
+        "risk_weight_",
+        "value_weight_",
+        "type_",
+        "formula_",
+        "delete_feature_",
+    )
+
+    widget_keys = {
+        "new_feature_name",
+        "new_feature_group",
+        "new_feature_group_display",
+        "new_feature_risk_weight",
+        "new_feature_value_weight",
+        "new_feature_type",
+        "new_feature_formula",
+        "normalize_manual_weights",
+        "score_distribution_feature",
+        "results_sort_option",
+    }
+
+    for key in list(st.session_state.keys()):
+        if key.startswith(widget_prefixes) or key in widget_keys:
+            del st.session_state[key]
 def clear_results_callback() -> None:
     """
     Полный сброс интерфейса:
@@ -406,6 +430,7 @@ def clear_results_callback() -> None:
 
 
 def normalize_manual_weights_callback() -> None:
+    client_type = st.session_state["client_type"]
     features = st.session_state.get("manual_features", [])
     target_group = "risk" if st.session_state["client_type"] == "active" else "value"
     weight_field = "risk_weight" if target_group == "risk" else "value_weight"
@@ -414,7 +439,7 @@ def normalize_manual_weights_callback() -> None:
     for index, feature in enumerate(features):
         widget_value = float(
             st.session_state.get(
-                f"{weight_field}_{index}",
+                f"{client_type}_{weight_field}_{index}",
                 feature.get(weight_field, 0.0),
             )
             or 0.0
@@ -428,7 +453,7 @@ def normalize_manual_weights_callback() -> None:
     current_weights = [
         float(
             st.session_state.get(
-                f"{weight_field}_{index}",
+                f"{client_type}_{weight_field}_{index}",
                 features[index].get(weight_field, 0.0),
             )
         )
@@ -444,7 +469,7 @@ def normalize_manual_weights_callback() -> None:
 
     for index, corrected_weight in zip(indices, corrected):
         features[index][weight_field] = corrected_weight
-        st.session_state[f"{weight_field}_{index}"] = corrected_weight
+        st.session_state[f"{client_type}_{weight_field}_{index}"] = corrected_weight
 
     st.session_state["manual_features"] = features
 
@@ -459,20 +484,33 @@ def render_manual_scoring_constructor() -> None:
     )
 
     features = st.session_state["manual_features"]
-
+    client_type = st.session_state["client_type"]
+    is_churned = client_type == "churned"
     if not features:
         st.warning("Добавьте хотя бы один признак.")
 
     header = st.columns([3.0, 1.6, 1.25, 1.25, 1.5, 2.3, 0.55])
-    labels = [
-        "Признак",
-        "Группа",
-        "Вес риска",
-        "Вес ценности",
-        "Тип",
-        "Формула",
-        "",
-    ]
+
+    if st.session_state["client_type"] == "active":
+        labels = [
+            "Признак",
+            "Группа",
+            "Вес риска",
+            "Вес ценности",
+            "Тип",
+            "Формула",
+            "",
+        ]
+    else:
+        labels = [
+            "Признак",
+            "Группа",
+            "",
+            "Вес возвращаемости",
+            "Тип",
+            "Формула",
+            "",
+        ]
     for column, label in zip(header, labels):
         column.caption(label)
 
@@ -480,42 +518,63 @@ def render_manual_scoring_constructor() -> None:
 
     for index, feature in enumerate(features):
         columns = st.columns([3.0, 1.6, 1.25, 1.25, 1.5, 2.3, 0.55])
-
+       
         with columns[0]:
             st.text(feature["name"])
 
         with columns[1]:
-            group = feature.get("group", "risk")
-            feature["group"] = st.selectbox(
-                "Группа",
-                options=list(FEATURE_GROUPS.keys()),
-                format_func=lambda value: FEATURE_GROUPS[value],
-                index=list(FEATURE_GROUPS.keys()).index(group),
-                key=f"group_{index}",
-                label_visibility="collapsed",
-            )
+            if is_churned:
+                feature["group"] = "return"
+                st.write("Возвращаемость")
+            else:
+                active_groups = ["risk", "value", "both"]
+                group = feature.get("group", "risk")
+
+                if group not in active_groups:
+                    group = "risk"
+
+                feature["group"] = st.selectbox(
+                    "Группа",
+                    options=active_groups,
+                    format_func=lambda value: FEATURE_GROUPS[value],
+                    index=active_groups.index(group),
+                    key=f"{client_type}_group_{index}",
+                    label_visibility="collapsed",
+                )
 
         with columns[2]:
-            feature["risk_weight"] = st.number_input(
-                "Вес риска",
-                min_value=0.0,
-                max_value=1.0,
-                value=float(feature.get("risk_weight", 0.0)),
-                step=0.005,
-                format="%.3f",
-                key=f"risk_weight_{index}",
-                label_visibility="collapsed",
-            )
+            if st.session_state["client_type"] == "active":
+                feature["risk_weight"] = st.number_input(
+                    "Вес риска",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(feature.get("risk_weight", 0.0)),
+                    step=0.005,
+                    format="%.3f",
+                    key=f"{client_type}_risk_weight_{index}",
+                    label_visibility="collapsed",
+                )
+            else:
+                st.empty()
 
         with columns[3]:
+            label = (
+                "Вес ценности"
+                if st.session_state["client_type"] == "active"
+                else "Вес возвращаемости"
+            )
             feature["value_weight"] = st.number_input(
-                "Вес ценности",
+                (
+                    "Вес ценности"
+                    if not is_churned
+                    else "Вес возвращаемости"
+                ),
                 min_value=0.0,
                 max_value=1.0,
                 value=float(feature.get("value_weight", 0.0)),
                 step=0.005,
                 format="%.3f",
-                key=f"value_weight_{index}",
+                key=f"{client_type}_value_weight_{index}",
                 label_visibility="collapsed",
             )
 
@@ -525,7 +584,7 @@ def render_manual_scoring_constructor() -> None:
                 "Тип",
                 options=FEATURE_TYPES,
                 index=FEATURE_TYPES.index(current_type),
-                key=f"type_{index}",
+                key=f"{client_type}_type_{index}",
                 label_visibility="collapsed",
             )
 
@@ -542,7 +601,7 @@ def render_manual_scoring_constructor() -> None:
                 options=formula_keys,
                 format_func=lambda value: FORMULA_OPTIONS[value],
                 index=formula_keys.index(current_formula),
-                key=f"formula_{index}",
+                key=f"{client_type}_formula_{index}",
                 label_visibility="collapsed",
             )
 
@@ -590,27 +649,43 @@ def render_manual_scoring_constructor() -> None:
         )
 
     with add_columns[1]:
-        new_group = st.selectbox(
-            "Группа",
-            options=list(FEATURE_GROUPS.keys()),
-            format_func=lambda value: FEATURE_GROUPS[value],
-            key="new_feature_group",
-        )
+        if is_churned:
+            new_group = "return"
+
+            st.text_input(
+                "Группа",
+                value="Возвращаемость",
+                disabled=True,
+                key="new_feature_group_display",
+            )
+        else:
+            new_group = st.selectbox(
+                "Группа",
+                options=["risk", "value", "both"],
+                format_func=lambda value: FEATURE_GROUPS[value],
+                key="new_feature_group",
+            )
 
     with add_columns[2]:
-        new_risk_weight = st.number_input(
-            "Вес риска",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.10,
-            step=0.005,
-            format="%.3f",
-            key="new_feature_risk_weight",
-        )
+        if st.session_state["client_type"] == "active":
+            new_risk_weight = st.number_input(
+                "Вес риска",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.10,
+                step=0.005,
+                format="%.3f",
+                key="new_feature_risk_weight",
+            )
+        else:
+            st.empty()
+            new_risk_weight = 0.0
 
     with add_columns[3]:
         new_value_weight = st.number_input(
-            "Вес ценности",
+            "Вес ценности"
+            if st.session_state["client_type"] == "active"
+            else "Вес возвращаемости",
             min_value=0.0,
             max_value=1.0,
             value=0.10,
@@ -660,7 +735,42 @@ def render_manual_scoring_constructor() -> None:
             )
             st.rerun()
 
+def format_top_factors(value) -> str:
+    if value is None:
+        return ""
 
+    # Если backend вернул список
+    if isinstance(value, list):
+        factors = [
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        ]
+        return "\n".join(factors)
+
+    text = str(value).strip()
+
+    if not text or text in {"[]", "None", "nan"}:
+        return ""
+
+    # Если список пришёл строкой:
+    # "['Фактор1', 'Фактор2']"
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            import ast
+
+            parsed = ast.literal_eval(text)
+
+            if isinstance(parsed, list):
+                return "\n".join(
+                    str(item).strip()
+                    for item in parsed
+                    if str(item).strip()
+                )
+        except Exception:
+            pass
+
+    return text
 def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
     clients = data.get("clients", [])
     summary = data.get("summary", {})
@@ -977,7 +1087,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
         filter_competitor = st.checkbox("Есть конкурент")
 
     with filter_columns[2]:
-        filter_threat = st.checkbox("Была угроза")
+        filter_threat = st.checkbox("Была угроза отключения")
 
     # Специфичный фильтр для ушедших клиентов
     with filter_columns[3]:
@@ -991,10 +1101,26 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
         filter_incomplete = st.checkbox("Неполные данные")
 
     with filter_columns[5]:
+        if is_churned:
+            sort_options = [
+                "По вероятности возврата",
+                "По контрагенту",
+                "По коду ТО",
+            ]
+            sort_widget_key = "results_sort_option_churned"
+        else:
+            sort_options = [
+                "По уровню риска",
+                "По итоговому скору",
+                "По контрагенту",
+                "По коду ТО",
+            ]
+            sort_widget_key = "results_sort_option_active"
+
         sort_option = st.selectbox(
             "Сортировка",
-            options=["По уровню риска", "По итоговому скору", "По контрагенту", "По коду ТО"],
-            key="results_sort_option",
+            options=sort_options,
+            key=sort_widget_key,
         )
 
     mask = pd.Series(True, index=df_full.index)
@@ -1034,30 +1160,150 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
     if prob_col in df_filtered.columns:
         df_filtered[prob_col] = pd.to_numeric(df_filtered[prob_col], errors="coerce")
 
-    if risk_col in df_filtered.columns:
-        df_filtered[risk_col] = pd.Categorical(df_filtered[risk_col], categories=levels, ordered=True)
+    # Числовая вероятность обязательна для корректной сортировки.
+    if prob_col in df_filtered.columns:
+        df_filtered[prob_col] = pd.to_numeric(
+            df_filtered[prob_col],
+            errors="coerce",
+        )
 
-    risk_order = {level: idx + 1 for idx, level in enumerate(reversed(levels))}
+    if sort_option == "По уровню возвращаемости":
+        return_level_order = {
+            "Очень высокая": 4,
+            "Высокая": 3,
+            "Средняя": 2,
+            "Низкая": 1,
+        }
 
-    if sort_option == "По уровню риска":
-        risk_values = df_filtered[risk_col].astype(str).str.strip()
-        df_filtered["_risk_rank"] = risk_values.map(risk_order).fillna(0).astype(int)
-        df_filtered = df_filtered.sort_values(by=["_risk_rank", prob_col], ascending=[False, False], kind="mergesort", na_position="last").drop(columns=["_risk_rank"])
-    elif sort_option == "По итоговому скору":
-        df_filtered = df_filtered.sort_values(by=prob_col, ascending=False, na_position="last")
+        df_filtered["_sort_level"] = (
+            df_filtered[risk_col]
+            .astype("string")
+            .str.strip()
+            .map(return_level_order)
+            .fillna(0)
+            .astype(int)
+        )
+
+        df_filtered = (
+            df_filtered
+            .sort_values(
+                by=["_sort_level", prob_col],
+                ascending=[False, False],
+                kind="stable",
+                na_position="last",
+            )
+            .drop(columns=["_sort_level"])
+        )
+
+    elif sort_option == "По уровню риска":
+        risk_level_order = {
+            "Критический": 4,
+            "Высокий": 3,
+            "Средний": 2,
+            "Низкий": 1,
+        }
+
+        df_filtered["_sort_level"] = (
+            df_filtered[risk_col]
+            .astype("string")
+            .str.strip()
+            .map(risk_level_order)
+            .fillna(0)
+            .astype(int)
+        )
+
+        df_filtered = (
+            df_filtered
+            .sort_values(
+                by=["_sort_level", prob_col],
+                ascending=[False, False],
+                kind="stable",
+                na_position="last",
+            )
+            .drop(columns=["_sort_level"])
+        )
+
+    elif sort_option in {
+        "По итоговому скору",
+        "По вероятности возврата",
+    }:
+        df_filtered = df_filtered.sort_values(
+            by=prob_col,
+            ascending=False,
+            kind="stable",
+            na_position="last",
+        )
+
     elif sort_option == "По контрагенту":
-        df_filtered = df_filtered.sort_values(by="company_name", ascending=True, na_position="last")
+        df_filtered["_sort_company"] = (
+            df_filtered["company_name"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        df_filtered = (
+            df_filtered
+            .sort_values(
+                by="_sort_company",
+                ascending=True,
+                kind="stable",
+                na_position="last",
+            )
+            .drop(columns=["_sort_company"])
+        )
+
     elif sort_option == "По коду ТО":
-        df_filtered["code_to"] = pd.to_numeric(df_filtered["code_to"], errors="coerce")
-        df_filtered = df_filtered.sort_values(by="code_to", ascending=True, na_position="last")
+        df_filtered["_sort_code_to"] = pd.to_numeric(
+            df_filtered["code_to"],
+            errors="coerce",
+        )
+
+        df_filtered = (
+            df_filtered
+            .sort_values(
+                by="_sort_code_to",
+                ascending=True,
+                kind="stable",
+                na_position="last",
+            )
+            .drop(columns=["_sort_code_to"])
+        )
+
+    # Новый последовательный индекс после любой сортировки.
+    df_filtered = df_filtered.reset_index(drop=True)
 
     st.subheader("Результаты скоринга")
     st.caption(f"Найдено клиентов: {len(df_filtered)}")
 
     if current_mode == "manual":
-        display_columns = ["company_name", "code_to", risk_col, "feature_completeness", "top_factors", competitor_column, "has_threat", "value_score", "risk_score", prob_col]
+        if is_churned:
+            display_columns = [
+                "company_name",
+                "code_to",
+                risk_col,
+                "top_factors",
+                competitor_column,
+                "has_threat",
+                prob_col,
+                "feature_completeness"
+            ]
+        else:
+            display_columns = [
+                "company_name",
+                "code_to",
+                risk_col,
+                "top_factors",
+                competitor_column,
+                "has_threat",
+                "value_score",
+                "risk_score",
+                prob_col,
+                "feature_completeness"
+            ]
     else:
-        display_columns = ["company_name", "code_to", prob_col, risk_col, "feature_completeness", "top_factors", competitor_column, "has_threat"]
+        display_columns = ["company_name", "code_to", risk_col, "top_factors", competitor_column, "has_threat", prob_col,"feature_completeness"]
     
     if is_churned and "disconnection_reason" in df_filtered.columns:
         display_columns.insert(4, "disconnection_reason")
@@ -1071,7 +1317,11 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
 
     if "feature_completeness" in df_show.columns:
         df_show["feature_completeness"] = pd.to_numeric(df_show["feature_completeness"], errors="coerce")
-
+    if "top_factors" in df_show.columns:
+        df_show["top_factors"] = (
+            df_show["top_factors"]
+            .apply(format_top_factors)
+    )
     rename_columns = {
         "company_name": "Контрагент",
         "code_to": "Код ТО",
@@ -1094,9 +1344,37 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
         "Скор риска": st.column_config.NumberColumn("Скор риска", format="percent"),
         probability_label: st.column_config.NumberColumn(probability_label, format="percent"),
         "Полнота данных": st.column_config.NumberColumn("Полнота данных", format="percent"),
+        "Основные факторы": st.column_config.TextColumn(
+            "Основные факторы",
+            width="medium",
+        ),
+    }
+    # После сортировки сбрасываем старые индексы.
+    df_show = df_show.reset_index(drop=True)
+
+    # Отдельный ключ для каждого варианта сортировки.
+    # Благодаря этому Streamlit не переносит сортировку,
+    # выставленную кликом по заголовку предыдущей таблицы.
+    sort_key_map = {
+        "По уровню риска": "risk_level",
+        "По итоговому скору": "risk_score",
+        "По уровню возвращаемости": "return_level",
+        "По вероятности возврата": "return_probability",
+        "По контрагенту": "company",
+        "По коду ТО": "code_to",
     }
 
-    st.dataframe(df_show, use_container_width=True, hide_index=True, column_config=dataframe_config)
+    table_sort_key = sort_key_map.get(
+        sort_option,
+        "default",
+    )
+    st.dataframe(
+    df_show,
+    use_container_width=True,
+    hide_index=True,
+    column_config=dataframe_config,
+    key=f"results_table_{client_type}_{table_sort_key}",
+    )
 
     if not df_filtered.empty:
         output = io.BytesIO()
@@ -1144,10 +1422,22 @@ with st.sidebar:
         changed = True
         
     if current_client_type != st.session_state["client_type"]:
+        clear_manual_widget_state()
+
         st.session_state["client_type"] = current_client_type
-        # Меняем дефолтные признаки при смене типа клиента
-        default_feats = DEFAULT_FEATURES_ACTIVE if current_client_type == "active" else DEFAULT_FEATURES_CHURNED
-        st.session_state["manual_features"] = [f.copy() for f in default_feats]
+
+        default_feats = (
+            DEFAULT_FEATURES_ACTIVE
+            if current_client_type == "active"
+            else DEFAULT_FEATURES_CHURNED
+        )
+
+        st.session_state["manual_features"] = [
+            feature.copy()
+            for feature in default_feats
+        ]
+
+        st.session_state["result_data"] = None
         changed = True
 
     if changed:
