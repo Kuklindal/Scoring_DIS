@@ -198,6 +198,7 @@ FEATURE_GROUPS = {
 RISK_LEVELS_ALL = ["Низкий", "Средний", "Высокий", "Критический"]
 RETURN_LEVELS_ALL = ["Низкая", "Средняя", "Высокая", "Очень высокая"]
 
+
 st.set_page_config(
     page_title="Scoring DIS System",
     layout="wide",
@@ -210,6 +211,13 @@ st.title("Система скоринга клиентов ДИС")
 def init_session_state() -> None:
     if "scoring_mode" not in st.session_state:
         st.session_state["scoring_mode"] = "ml"
+    
+    # Добавляем состояние типа клиента (active / churned)
+    if "client_type" not in st.session_state:
+        st.session_state["client_type"] = "active"
+
+    # Выбираем дефолтные признаки в зависимости от типа клиента
+    default_feats = DEFAULT_FEATURES_ACTIVE if st.session_state["client_type"] == "active" else DEFAULT_FEATURES_CHURNED
 
     # Добавляем состояние типа клиента (active / churned)
     if "client_type" not in st.session_state:
@@ -276,21 +284,21 @@ def manual_weights_are_valid() -> bool:
     # Для ушедших клиентов проверяем только вес возвращаемости (value_weight)
     target_group = "risk" if st.session_state["client_type"] == "active" else "value"
     total = get_group_total(target_group)
-
+    
     if st.session_state["client_type"] == "active":
         return (
-                bool(features)
-                and abs(get_group_total("risk") - 1.0) < 0.005
-                and abs(get_group_total("value") - 1.0) < 0.005
+            bool(features)
+            and abs(get_group_total("risk") - 1.0) < 0.005
+            and abs(get_group_total("value") - 1.0) < 0.005
         )
     else:
         return bool(features) and abs(total - 1.0) < 0.005
 
 
 def send_scoring_request(
-        uploaded_file,
-        current_mode: str,
-        client_type: str,
+    uploaded_file,
+    current_mode: str,
+    client_type: str,
 ) -> dict | None:
     files = {
         "file": (
@@ -363,7 +371,7 @@ def clear_results_callback() -> None:
     - пересоздаёт file_uploader, чтобы выбранный файл исчез.
     """
     st.session_state["result_data"] = None
-
+    
     default_feats = DEFAULT_FEATURES_ACTIVE if st.session_state["client_type"] == "active" else DEFAULT_FEATURES_CHURNED
     st.session_state["manual_features"] = [
         feature.copy() for feature in default_feats
@@ -443,9 +451,8 @@ def normalize_manual_weights_callback() -> None:
 
 def render_manual_scoring_constructor() -> None:
     st.subheader("Конструктор ручного скоринга")
-
-    client_label = "активных клиентов (Риск + Ценность)" if st.session_state[
-                                                                "client_type"] == "active" else "ушедших клиентов (Возвращаемость)"
+    
+    client_label = "активных клиентов (Риск + Ценность)" if st.session_state["client_type"] == "active" else "ушедших клиентов (Возвращаемость)"
     st.info(
         f"Настройка формулы для {client_label}. "
         "Сумма весов должна быть равна 1,00."
@@ -548,10 +555,10 @@ def render_manual_scoring_constructor() -> None:
     total = get_group_total(target_group)
 
     st.divider()
-
+    
     metric_columns = st.columns(2)
     label_text = "Риска" if target_group == "risk" else "Возвращаемости"
-
+    
     with metric_columns[0]:
         st.metric(
             f"Сумма весов ({label_text})",
@@ -665,7 +672,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
 
     prob_col = "final_probability"
     is_churned = client_type == "churned"
-
+    
     # Адаптация названий колонок и метрик под тип клиента
     risk_col = "risk_level" if not is_churned else "return_level"
 
@@ -761,7 +768,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
             risk_counts = risk_counts[risk_counts["Количество"] > 0]
 
             title_text = "Распределение по уровням риска" if not is_churned else "Распределение по уровням возвращаемости"
-
+            
             figure = px.pie(
                 risk_counts,
                 values="Количество",
@@ -867,7 +874,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
             numeric_values = pd.to_numeric(df_full[column], errors="coerce")
             if numeric_values.notna().sum() == 0:
                 continue
-
+            
             display_label = chart_labels.get(column, display_label)
             if current_mode == "manual":
                 display_label = next(
@@ -926,48 +933,30 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
             unique_count = graph_df[selected_graph].nunique()
 
             if graph_df.empty:
-                figure = px.bar(pd.DataFrame({"Группа": [], "Средний итоговый скор": []}), x="Группа",
-                                y="Средний итоговый скор", title=f"Нет данных для признака: {feature_label}")
+                figure = px.bar(pd.DataFrame({"Группа": [], "Средний итоговый скор": []}), x="Группа", y="Средний итоговый скор", title=f"Нет данных для признака: {feature_label}")
             elif unique_count <= 10:
                 graph_df["_Группа"] = graph_df[selected_graph].map(
                     lambda value: (
-                        f"{value:.0%}" if is_percent_feature
-                        else "Да" if value == 1
-                        else "Нет" if value == 0
+                        f"{value:.0%}" if is_percent_feature 
+                        else "Да" if value == 1 
+                        else "Нет" if value == 0 
                         else f"{value:g}"
                     )
                 )
-                grouped_df = graph_df.groupby("_Группа", as_index=False).agg(
-                    **{"Средний итоговый скор": (prob_col, "mean"), "Количество клиентов": (prob_col, "size")})
-                figure = px.bar(grouped_df, x="_Группа", y="Средний итоговый скор", color="Средний итоговый скор",
-                                color_continuous_scale=["#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"],
-                                title=f"Средний {probability_label} по признаку: {feature_label}",
-                                labels={"_Группа": feature_label,
-                                        "Средний итоговый скор": f"Средний {probability_label}"},
-                                hover_data={"Количество клиентов": True, "Средний итоговый скор": ":.2%"})
+                grouped_df = graph_df.groupby("_Группа", as_index=False).agg(**{"Средний итоговый скор": (prob_col, "mean"), "Количество клиентов": (prob_col, "size")})
+                figure = px.bar(grouped_df, x="_Группа", y="Средний итоговый скор", color="Средний итоговый скор", color_continuous_scale=["#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"], title=f"Средний {probability_label} по признаку: {feature_label}", labels={"_Группа": feature_label, "Средний итоговый скор": f"Средний {probability_label}"}, hover_data={"Количество клиентов": True, "Средний итоговый скор": ":.2%"})
             else:
                 number_of_bins = min(10, unique_count)
                 try:
                     graph_df["_Диапазон"] = pd.qcut(graph_df[selected_graph], q=number_of_bins, duplicates="drop")
                 except ValueError:
                     graph_df["_Диапазон"] = pd.cut(graph_df[selected_graph], bins=number_of_bins, duplicates="drop")
-
-                grouped_df = graph_df.groupby("_Диапазон", observed=True, as_index=False).agg(
-                    **{"Средний итоговый скор": (prob_col, "mean"), "Количество клиентов": (prob_col, "size"),
-                       "Среднее значение признака": (selected_graph, "mean"),
-                       "Минимум признака": (selected_graph, "min"),
-                       "Максимум признака": (selected_graph, "max")}).sort_values("Среднее значение признака")
-                figure = px.line(grouped_df, x="Среднее значение признака", y="Средний итоговый скор", markers=True,
-                                 title=f"Зависимость {probability_label} от признака: {feature_label}",
-                                 labels={"Среднее значение признака": feature_label,
-                                         "Средний итоговый скор": f"Средний {probability_label}"},
-                                 hover_data={"Количество клиентов": True, "Минимум признака": ":.2f",
-                                             "Максимум признака": ":.2f", "Средний итоговый скор": ":.2%"})
+                
+                grouped_df = graph_df.groupby("_Диапазон", observed=True, as_index=False).agg(**{"Средний итоговый скор": (prob_col, "mean"), "Количество клиентов": (prob_col, "size"), "Среднее значение признака": (selected_graph, "mean"), "Минимум признака": (selected_graph, "min"), "Максимум признака": (selected_graph, "max")}).sort_values("Среднее значение признака")
+                figure = px.line(grouped_df, x="Среднее значение признака", y="Средний итоговый скор", markers=True, title=f"Зависимость {probability_label} от признака: {feature_label}", labels={"Среднее значение признака": feature_label, "Средний итоговый скор": f"Средний {probability_label}"}, hover_data={"Количество клиентов": True, "Минимум признака": ":.2f", "Максимум признака": ":.2f", "Средний итоговый скор": ":.2%"})
                 figure.update_traces(line=dict(width=3), marker=dict(size=10))
 
-            figure.update_layout(height=500, coloraxis_showscale=False, yaxis_tickformat=".0%",
-                                 yaxis_title=f"Средний {probability_label}", xaxis_title=feature_label,
-                                 xaxis_tickangle=0)
+            figure.update_layout(height=500, coloraxis_showscale=False, yaxis_tickformat=".0%", yaxis_title=f"Средний {probability_label}", xaxis_title=feature_label, xaxis_tickangle=0)
             if is_percent_feature:
                 figure.update_xaxes(tickformat=".0%", title_text=feature_label)
 
@@ -978,9 +967,8 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
 
     filter_columns = st.columns([1.3, 1, 1, 1, 1, 1.35])
 
-    available_levels = [l for l in levels if
-                        l in df_full.get(risk_col, []).unique()] if risk_col in df_full.columns else []
-
+    available_levels = [l for l in levels if l in df_full.get(risk_col, []).unique()] if risk_col in df_full.columns else []
+    
     with filter_columns[0]:
         level_label = "Уровень риска" if not is_churned else "Уровень возвращаемости"
         sel_levels = st.multiselect(level_label, options=available_levels, default=available_levels)
@@ -1054,8 +1042,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
     if sort_option == "По уровню риска":
         risk_values = df_filtered[risk_col].astype(str).str.strip()
         df_filtered["_risk_rank"] = risk_values.map(risk_order).fillna(0).astype(int)
-        df_filtered = df_filtered.sort_values(by=["_risk_rank", prob_col], ascending=[False, False], kind="mergesort",
-                                              na_position="last").drop(columns=["_risk_rank"])
+        df_filtered = df_filtered.sort_values(by=["_risk_rank", prob_col], ascending=[False, False], kind="mergesort", na_position="last").drop(columns=["_risk_rank"])
     elif sort_option == "По итоговому скору":
         df_filtered = df_filtered.sort_values(by=prob_col, ascending=False, na_position="last")
     elif sort_option == "По контрагенту":
@@ -1068,12 +1055,10 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
     st.caption(f"Найдено клиентов: {len(df_filtered)}")
 
     if current_mode == "manual":
-        display_columns = ["company_name", "code_to", risk_col, "feature_completeness", "top_factors",
-                           competitor_column, "has_threat", "value_score", "risk_score", prob_col]
+        display_columns = ["company_name", "code_to", risk_col, "feature_completeness", "top_factors", competitor_column, "has_threat", "value_score", "risk_score", prob_col]
     else:
-        display_columns = ["company_name", "code_to", prob_col, risk_col, "feature_completeness", "top_factors",
-                           competitor_column, "has_threat"]
-
+        display_columns = ["company_name", "code_to", prob_col, risk_col, "feature_completeness", "top_factors", competitor_column, "has_threat"]
+    
     if is_churned and "disconnection_reason" in df_filtered.columns:
         display_columns.insert(4, "disconnection_reason")
 
@@ -1116,7 +1101,7 @@ def render_dashboard(data: dict, current_mode: str, client_type: str) -> None:
     if not df_filtered.empty:
         output = io.BytesIO()
         export_cols = [c for c in display_columns if c in df_filtered.columns]
-
+        
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             sheet_name = "Winback_Scoring" if is_churned else "Churn_Scoring"
             df_filtered[export_cols].rename(columns=rename_columns).to_excel(writer, index=False, sheet_name=sheet_name)
@@ -1157,7 +1142,7 @@ with st.sidebar:
     if current_mode != st.session_state["scoring_mode"]:
         st.session_state["scoring_mode"] = current_mode
         changed = True
-
+        
     if current_client_type != st.session_state["client_type"]:
         st.session_state["client_type"] = current_client_type
         # Меняем дефолтные признаки при смене типа клиента
@@ -1217,6 +1202,7 @@ with st.sidebar:
                 st.rerun()
 
     st.button("Очистить результаты", on_click=clear_results_callback)
+
 
 if st.session_state["result_data"] is not None:
     render_dashboard(
